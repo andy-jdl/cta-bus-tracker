@@ -1,0 +1,235 @@
+<html>
+<head>
+    <title>Using Ktor WebSockets</title>
+    <script>
+        function currentSystemTime() {
+            const serverURL = 'ws://localhost:8080/bustime';
+            const socket = new WebSocket(serverURL);
+
+            socket.onopen = logOpenToConsole;
+            socket.onclose = logCloseToConsole;
+            socket.onmessage = displayCurrentSystemTime
+        }
+
+        function displayCurrentSystemTime(event) {
+            const data = JSON.parse(event.data)
+            const tm = convertToAMPM(data["bustime-response"]["tm"])
+
+            const systemTime = document.getElementById("systemTime")
+            systemTime.innerHTML = tm
+        }
+
+        async function displayVehicle() {
+            const rt = document.getElementById("routeInput").value
+
+            if (!rt) {
+                document.getElementById("routeDisplay").innerHTML = "Please enter a route"
+                return null
+            }
+
+            const response = await fetch(`/bustime/vehicles?rt=${rt}`)
+            const data = await response.json()
+
+            if(response.ok) {
+                document.getElementById("routeDisplay").innerHTML = JSON.stringify(data, null, 2)
+                await displayDirection(rt)
+            } else {
+                document.getElementById("routeDisplay").innerHTML = "Not a valid route.."
+            }
+        }
+
+
+        async function displayDirection(rt) {
+            const response = await fetch(`/bustime/directions?rt=${rt}`)
+            const data = await response.json()
+
+            const select = document.getElementById("routeDirection")
+            select.innerHTML = '<option value="">-- Select Direction --</option>'
+
+            const directions = data["bustime-response"]["directions"]
+            for(const direction of directions) {
+                const option = document.createElement("option")
+                option.value = direction["id"]
+                option.text = direction["name"]
+                select.append(option)
+            }
+        }
+
+        async function handleVehicleDirection(){
+            const rt = document.getElementById("routeInput").value
+            const dir = document.getElementById("routeDirection").value
+            await displayStreetNameStops(rt, dir)
+        }
+
+        async function displayStreetNameStops(rt, dir) {
+            const response = await fetch(`/bustime/stops?rt=${rt}&dir=${dir}`)
+            const data = await response.json()
+
+            const select = document.getElementById("streetStopNames")
+            select.innerHTML = '<option value="">-- Select Stop --</option>'
+
+            const stopNames = data["bustime-response"]["stops"]
+            for(const stop of stopNames) {
+                const option = document.createElement("option")
+                option.value = stop["stpid"]
+                option.text = stop["stpnm"]
+                select.append(option)
+            }
+        }
+
+        async function handleBusArrivals() {
+            const rt = document.getElementById("routeInput").value
+            const stpid = document.getElementById("streetStopNames").value
+            await connectArrivalsSocket(rt, stpid)
+        }
+
+        async function connectArrivalsSocket(rt, stpid) {
+            if (window.arrivalsSocket) {
+                window.arrivalsSocket.close()
+            }
+
+            const socket = new WebSocket(`ws://localhost:8080/bustime/arrivals?rt=${rt}&stpid=${stpid}`)
+            window.arrivalsSocket = socket
+
+            socket.onopen = () => console.log("Arrivals socket connected")
+            socket.onclose = () => console.log("Arrivals socket closed")
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data)
+                updateBusArrivalDetails(data)
+            }
+        }
+
+        async function updateBusArrivalDetails(data) {
+            const arrivals = data["bustime-response"]["prd"]
+            const tbody = document.getElementById("busTimes").querySelector("tbody")
+            tbody.innerHTML = ""
+
+            if (!arrivals) {
+                tbody.innerHTML = "<tr><td colspan='4'>No arrivals found</td></tr>"
+                return
+            }
+
+            arrivals.forEach(arrival => {
+                const row = document.createElement("tr")
+                const timeAMPM = convertToAMPM(arrival["prdtm"])
+                row.innerHTML = `
+                    <td>${timeAMPM}</td>
+                    <td>${arrival["prdctdn"]}</td>
+                    <td>${arrival["dly"] ? "Yes" : "No"}</td>
+                    <td>${arrival["psgld"]}</td>
+                `
+                tbody.appendChild(row)
+            })
+        }
+
+        function convertToAMPM(tmstmp) {
+            const timePart = tmstmp.split(" ")[1]
+            const [hours, minutes] = timePart.split(":")
+
+            let hour = parseInt(hours)
+            const ampm = hour >= 12 ? "PM" : "AM"
+            hour = hour % 12 || 12
+
+            return `${hour}:${minutes} ${ampm}`
+        }
+
+        function logCloseToConsole(message) {
+            console.log(message)
+            console.log("Web socket connection closed");
+        }
+
+        function logOpenToConsole() {
+            console.log("Web socket connection opened");
+        }
+    </script>
+</head>
+<body>
+<h1>Viewing Bus Times Via WebSockets</h1>
+<h2 id="systemTime">Loading system time...</h2>
+
+<form>
+    <label for="routeInput">Route: </label>
+    <input id="routeInput" type="text" placeholder="e.g. 22" />
+    <button type="button" onclick="displayVehicle()">Get Vehicles</button>
+
+    <br /><br />
+
+    <label for="routeDirection">Direction:</label>
+    <select id="routeDirection">
+        <option value="">-- Select Direction --</option>
+    </select>
+    <button type="button" onclick="handleVehicleDirection()">Set Direction</button>
+
+    <br /><br />
+    <label for="streetStopNames">Street:</label>
+    <select id="streetStopNames">
+        <option value="">-- Select Stop --</option>
+    </select>
+    <button type="button" onclick="handleBusArrivals()">Get Arrivals</button>
+
+    <br /><br />
+    <label for="busTimes">Predicated Arrival (Updates every 30 seconds):</label>
+    <style>
+        table {
+            border-collapse: collapse;
+            border: 2px solid rgb(140 140 140);
+            font-family: sans-serif;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+        }
+
+        caption {
+            caption-side: bottom;
+            padding: 10px;
+            font-weight: bold;
+        }
+
+        thead,
+        tfoot {
+            background-color: rgb(228 240 245);
+        }
+
+        th,
+        td {
+            border: 1px solid rgb(160 160 160);
+            padding: 8px 10px;
+        }
+
+        td:last-of-type {
+            text-align: center;
+        }
+
+        tbody > tr:nth-of-type(even) {
+            background-color: rgb(237 238 242);
+        }
+
+        tfoot th {
+            text-align: right;
+        }
+
+        tfoot td {
+            font-weight: bold;
+        }
+    </style>
+    <table id="busTimes">
+        <thead>
+            <tr>
+                <th scope="col">Arrival | </th>
+                <th scope="col">Time to dest (minutes) | </th>
+                <th scope="col">Delay | </th>
+                <th scope="col">Passenger load | </th>
+            </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
+
+    <pre id="routeDisplay">Select a route to start...</pre>
+</form>
+
+<script>
+    currentSystemTime()
+</script>
+</body>
+</html>
+
